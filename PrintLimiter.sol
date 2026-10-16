@@ -1,7 +1,9 @@
-pragma solidity ^0.4.21;
+// SPDX-License-Identifier: UNLICENSED
+// Copyright (c) 2020 Gemini Trust Company LLC. All Rights Reserved
+pragma solidity ^0.8.0;
 
 import "./ERC20Impl.sol";
-import "./LockRequestable.sol";
+import "./LockRequestableV1dot1.sol";
 
 /** @title  A contact to govern hybrid control over increases to the token supply.
   *
@@ -19,25 +21,25 @@ import "./LockRequestable.sol";
   *
   * @author  Gemini Trust Company, LLC
   */
-contract PrintLimiter is LockRequestable {
+contract PrintLimiter is LockRequestableV1dot1 {
 
     // TYPES
-    /// @dev The struct type for pending ceiling raises.
-    struct PendingCeilingRaise {
+    /// @dev The struct type for ceiling/limit raises.
+    struct Raise {
         uint256 raiseBy;
     }
 
     // MEMBERS
     /// @dev  The reference to the active token implementation.
-    ERC20Impl public erc20Impl;
+    ERC20Impl immutable public erc20Impl;
 
     /// @dev  The address of the account or contract that acts as the custodian.
-    address public custodian;
+    address immutable public custodian;
 
     /** @dev  The sole authorized caller of limited printing.
       * This account is also authorized to lower the supply ceiling.
       */
-    address public limitedPrinter;
+    address immutable public limitedPrinter;
 
     /** @dev  The maximum that the token supply can be increased to
       * through use of the limited printing feature.
@@ -47,31 +49,42 @@ contract PrintLimiter is LockRequestable {
       */
     uint256 public totalSupplyCeiling;
 
+    /** @dev  The maximum that can be seized (burnt) through use of
+      * the limited burn feature.
+      * The value of the limit can only be increased by the custodian.
+      * The value of the limit can be decreased by the 'limited printer'.
+      */
+    uint256 public seizureLimit;
+
     /// @dev  The map of lock ids to pending ceiling raises.
-    mapping (bytes32 => PendingCeilingRaise) public pendingRaiseMap;
+    mapping (bytes32 => Raise) public pendingRaiseMap;
+
+    /// @dev  The map of lock ids to pending seizure limit raises.
+    mapping (bytes32 => Raise) public pendingSeizureLimitRaiseMap;
 
     // CONSTRUCTOR
-    function PrintLimiter(
+    constructor(
         address _erc20Impl,
         address _custodian,
         address _limitedPrinter,
-        uint256 _initialCeiling
+        uint256 _initialCeiling,
+        uint256 _initialSeizureLimit
     )
-        public
     {
         erc20Impl = ERC20Impl(_erc20Impl);
         custodian = _custodian;
         limitedPrinter = _limitedPrinter;
         totalSupplyCeiling = _initialCeiling;
+        seizureLimit = _initialSeizureLimit;
     }
 
     // MODIFIERS
     modifier onlyCustodian {
-        require(msg.sender == custodian);
+        require(msg.sender == custodian, "unauthorized");
         _;
     }
     modifier onlyLimitedPrinter {
-        require(msg.sender == limitedPrinter);
+        require(msg.sender == limitedPrinter, "unauthorized");
         _;
     }
 
@@ -86,13 +99,45 @@ contract PrintLimiter is LockRequestable {
       * @param  _value  The number of tokens to add to the total supply and the
       * balance of the receiving address.
       */
-    function limitedPrint(address _receiver, uint256 _value) public onlyLimitedPrinter {
+    function limitedPrint(address _receiver, uint256 _value) external onlyLimitedPrinter {
         uint256 totalSupply = erc20Impl.totalSupply();
-        uint256 newTotalSupply = totalSupply + _value;
 
-        require(newTotalSupply >= totalSupply);
-        require(newTotalSupply <= totalSupplyCeiling);
-        erc20Impl.confirmPrint(erc20Impl.requestPrint(_receiver, _value));
+        unchecked {
+            // unchecked `+` is safe as overflow check follow
+            uint256 newTotalSupply = totalSupply + _value;
+            require(newTotalSupply >= totalSupply, "overflow");
+
+            require(newTotalSupply <= totalSupplyCeiling, "ceiling exceeded");
+            erc20Impl.executePrint(_receiver, _value);
+        }
+    }
+
+    function limitedBurn(address _owner, uint256 _value) external onlyLimitedPrinter {
+        require(_value <= seizureLimit, "limit exceeded");
+
+        unchecked {
+            // unchecked `-` is safe as `_value <= seizureLimit`
+            seizureLimit = seizureLimit - _value;
+        }
+        erc20Impl.burn(_owner, _value);
+    }
+
+    function requestRaise(mapping(bytes32 => Raise) storage _m, bytes4 _selector, uint256 _raiseBy) private returns (bytes32 lockId, uint256 lockRequestIdx) {
+        require(_raiseBy != 0, "zero");
+
+        (bytes32 preLockId, uint256 idx) = generatePreLockId();
+        lockId = keccak256(
+            abi.encodePacked(
+                preLockId,
+                _selector,
+                _raiseBy
+            )
+        );
+        lockRequestIdx = idx;
+
+        _m[lockId] = Raise({
+            raiseBy: _raiseBy
+        });
     }
 
     /** @notice  Requests an increase to the supply ceiling.
@@ -105,16 +150,37 @@ contract PrintLimiter is LockRequestable {
       *
       * @return  lockId  A unique identifier for this request.
       */
-    function requestCeilingRaise(uint256 _raiseBy) public returns (bytes32 lockId) {
-        require(_raiseBy != 0);
+    function requestCeilingRaise(uint256 _raiseBy) external returns (bytes32 lockId) {
+        (bytes32 id, uint256 idx) = requestRaise(pendingRaiseMap, this.requestCeilingRaise.selector, _raiseBy);
 
-        lockId = generateLockId();
+        emit CeilingRaiseLocked(id, _raiseBy, idx);
+        return id;
+    }
 
-        pendingRaiseMap[lockId] = PendingCeilingRaise({
-            raiseBy: _raiseBy
-        });
+    /** @notice  Requests an increase to the seizure limit.
+      *
+      * @dev  Returns a unique lock id associated with the request.
+      * Anyone can call this function, but confirming the request is authorized
+      * by the custodian.
+      *
+      * @param  _raiseBy  The amount by which to raise the seizure limit.
+      *
+      * @return  lockId  A unique identifier for this request.
+      */
+    function requestSeizureLimitRaise(uint256 _raiseBy) external returns (bytes32 lockId) {
+        (bytes32 id, uint256 idx) = requestRaise(pendingSeizureLimitRaiseMap, this.requestSeizureLimitRaise.selector, _raiseBy);
 
-        emit CeilingRaiseLocked(lockId, _raiseBy);
+        emit SeizureLimitRaiseLocked(id, _raiseBy, idx);
+        return id;
+    }
+
+    function getRequest(mapping(bytes32 => Raise) storage _m, bytes32 _lockId) private view returns (uint256 raiseBy) {
+        Raise storage r = _m[_lockId];
+
+        // reject ‘null’ results from the map lookup
+        // this can only be the case if an unknown `_lockId` is received
+        raiseBy = r.raiseBy;
+        require(raiseBy != 0, "no such lockId");
     }
 
     /** @notice  Confirms a pending increase in the token supply.
@@ -127,22 +193,45 @@ contract PrintLimiter is LockRequestable {
       *
       * @param  _lockId  The identifier of a pending ceiling raise request.
       */
-    function confirmCeilingRaise(bytes32 _lockId) public onlyCustodian {
-        PendingCeilingRaise storage pendingRaise = pendingRaiseMap[_lockId];
-
-        // copy locals of references to struct members
-        uint256 raiseBy = pendingRaise.raiseBy;
-        // accounts for a gibberish _lockId
-        require(raiseBy != 0);
+    function confirmCeilingRaise(bytes32 _lockId) external onlyCustodian {
+        uint256 raiseBy = getRequest(pendingRaiseMap, _lockId);
 
         delete pendingRaiseMap[_lockId];
 
-        uint256 newCeiling = totalSupplyCeiling + raiseBy;
-        // overflow check
-        if (newCeiling >= totalSupplyCeiling) {
-            totalSupplyCeiling = newCeiling;
+        unchecked {
+            // unchecked `+` is safe as overflow check follows
+            uint256 newCeiling = totalSupplyCeiling + raiseBy;
+            if (newCeiling >= totalSupplyCeiling) {
+                totalSupplyCeiling = newCeiling;
 
-            emit CeilingRaiseConfirmed(_lockId, raiseBy, newCeiling);
+                emit CeilingRaiseConfirmed(_lockId, raiseBy, newCeiling);
+            }
+        }
+    }
+
+    /** @notice  Confirms a pending increase in the seizure limit.
+      *
+      * @dev  When called by the custodian with a lock id associated with a
+      * pending seizure limit increase, the amount requested is added to the
+      * current limit.
+      * NOTE: this function will not execute any raise that would overflow the
+      * seizure limit, but it will not revert either.
+      *
+      * @param  _lockId  The identifier of a pending seizure limit raise request.
+      */
+    function confirmSeizureLimitRaise(bytes32 _lockId) external onlyCustodian {
+        uint256 raiseBy = getRequest(pendingSeizureLimitRaiseMap, _lockId);
+
+        delete pendingSeizureLimitRaiseMap[_lockId];
+
+        unchecked {
+            // unchecked `+` is safe as overflow check follows
+            uint256 newSeizureLimit = seizureLimit + raiseBy;
+            if (newSeizureLimit >= seizureLimit) {
+                seizureLimit = newSeizureLimit;
+
+                emit SeizureLimitRaiseConfirmed(_lockId, raiseBy, newSeizureLimit);
+            }
         }
     }
 
@@ -155,13 +244,36 @@ contract PrintLimiter is LockRequestable {
       *
       * @param  _lowerBy  The amount by which to lower the supply ceiling.
       */
-    function lowerCeiling(uint256 _lowerBy) public onlyLimitedPrinter {
-        uint256 newCeiling = totalSupplyCeiling - _lowerBy;
-        // overflow check
-        require(newCeiling <= totalSupplyCeiling);
-        totalSupplyCeiling = newCeiling;
+    function lowerCeiling(uint256 _lowerBy) external onlyLimitedPrinter {
+        unchecked {
+            // unchecked `-` is safe as overflow check follows
+            uint256 newCeiling = totalSupplyCeiling - _lowerBy;
+            require(newCeiling <= totalSupplyCeiling, "overflow");
 
-        emit CeilingLowered(_lowerBy, newCeiling);
+            totalSupplyCeiling = newCeiling;
+
+            emit CeilingLowered(_lowerBy, newCeiling);
+        }
+    }
+
+    /** @notice  Lowers the seizure limit, further constraining the bound of
+      * what can be seized (burnt) by the limited printer.
+      *
+      * @dev  The limited printer is the sole authorized caller of this function,
+      * so it is the only account that can elect to lower its limit to seize assets.
+      *
+      * @param  _lowerBy  The amount by which to lower the seizure limit.
+      */
+    function lowerSeizureLimit(uint256 _lowerBy) external onlyLimitedPrinter {
+        unchecked {
+            // unchecked `-` is safe as overflow check follows
+            uint256 newSeizureLimit = seizureLimit - _lowerBy;
+            require(newSeizureLimit <= seizureLimit, "overflow");
+
+            seizureLimit = newSeizureLimit;
+
+            emit SeizureLimitLowered(_lowerBy, newSeizureLimit);
+        }
     }
 
     /** @notice  Pass-through control of print confirmation, allowing this
@@ -177,7 +289,7 @@ contract PrintLimiter is LockRequestable {
       * @param  _lockId  The identifier of a pending print request in
       * the associated active token implementation.
       */
-    function confirmPrintProxy(bytes32 _lockId) public onlyCustodian {
+    function confirmPrintProxy(bytes32 _lockId) external onlyCustodian {
         erc20Impl.confirmPrint(_lockId);
     }
 
@@ -194,16 +306,24 @@ contract PrintLimiter is LockRequestable {
       * @param  _lockId  The identifier of a pending custodian change request
       * in the associated active token implementation.
       */
-    function confirmCustodianChangeProxy(bytes32 _lockId) public onlyCustodian {
+    function confirmCustodianChangeProxy(bytes32 _lockId) external onlyCustodian {
         erc20Impl.confirmCustodianChange(_lockId);
     }
 
     // EVENTS
     /// @dev  Emitted by successful `requestCeilingRaise` calls.
-    event CeilingRaiseLocked(bytes32 _lockId, uint256 _raiseBy);
+    event CeilingRaiseLocked(bytes32 _lockId, uint256 _raiseBy, uint256 _lockRequestIdx);
     /// @dev  Emitted by successful `confirmCeilingRaise` calls.
     event CeilingRaiseConfirmed(bytes32 _lockId, uint256 _raiseBy, uint256 _newCeiling);
 
+    /// @dev  Emitted by successful `requestSeizureLimitRaise` calls.
+    event SeizureLimitRaiseLocked(bytes32 _lockId, uint256 _raiseBy, uint256 _lockRequestIdx);
+    /// @dev  Emitted by successful `confirmSeizureLimitRaise` calls.
+    event SeizureLimitRaiseConfirmed(bytes32 _lockId, uint256 _raiseBy, uint256 _newSeizureLimit);
+
     /// @dev  Emitted by successful `lowerCeiling` calls.
     event CeilingLowered(uint256 _lowerBy, uint256 _newCeiling);
+
+    /// @dev  Emitted by successful `lowerSeizureLimit` calls.
+    event SeizureLimitLowered(uint256 _lowerBy, uint256 _newSeizureLimit);
 }

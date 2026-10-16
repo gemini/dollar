@@ -1,4 +1,6 @@
-pragma solidity ^0.4.21;
+// SPDX-License-Identifier: UNLICENSED
+// Copyright (c) 2020 Gemini Trust Company LLC. All Rights Reserved
+pragma solidity ^0.8.0;
 
 /** @title  A contract for generating unique identifiers
   *
@@ -11,14 +13,14 @@ pragma solidity ^0.4.21;
   *
   * @author  Gemini Trust Company, LLC
   */
-contract LockRequestable {
+abstract contract LockRequestable {
 
     // MEMBERS
     /// @notice  the count of all invocations of `generateLockId`.
     uint256 public lockRequestCount;
 
     // CONSTRUCTOR
-    function LockRequestable() public {
+    constructor() {
         lockRequestCount = 0;
     }
 
@@ -33,9 +35,19 @@ contract LockRequestable {
       * following this scheme, and that future identifiers are
       * unpredictable.
       *
-      * @return a 32-byte unique identifier.
+      * @return lockId a 32-byte unique identifier.
       */
     function generateLockId() internal returns (bytes32 lockId) {
-        return keccak256(block.blockhash(block.number - 1), address(this), ++lockRequestCount);
+        unchecked {
+            // unchecked `-` is safe as this can never be evaluated in the genesis (0) block
+            // unchecked `++` is safe as it is infeasible to exhaust 256-bit integer counter
+            return keccak256(
+                abi.encodePacked(
+                    blockhash(block.number - 1),
+                    address(this),
+                    ++lockRequestCount
+                )
+            );
+        }
     }
 }

@@ -1,6 +1,8 @@
-pragma solidity ^0.4.21;
+// SPDX-License-Identifier: UNLICENSED
+// Copyright (c) 2020 Gemini Trust Company LLC. All Rights Reserved
+pragma solidity ^0.8.0;
 
-contract ERC20Interface {
+interface ERC20Interface {
   // METHODS
 
   // NOTE:
@@ -17,22 +19,22 @@ contract ERC20Interface {
   // function decimals() public view returns (uint8);
 
   // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-20.md#totalsupply
-  function totalSupply() public view returns (uint256);
+  function totalSupply() external view returns (uint256);
 
   // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-20.md#balanceof
-  function balanceOf(address _owner) public view returns (uint256 balance);
+  function balanceOf(address _owner) external view returns (uint256 balance);
 
   // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-20.md#transfer
-  function transfer(address _to, uint256 _value) public returns (bool success);
+  function transfer(address _to, uint256 _value) external returns (bool success);
 
   // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-20.md#transferfrom
-  function transferFrom(address _from, address _to, uint256 _value) public returns (bool success);
+  function transferFrom(address _from, address _to, uint256 _value) external returns (bool success);
 
   // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-20.md#approve
-  function approve(address _spender, uint256 _value) public returns (bool success);
+  function approve(address _spender, uint256 _value) external returns (bool success);
 
   // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-20.md#allowance
-  function allowance(address _owner, address _spender) public view returns (uint256 remaining);
+  function allowance(address _owner, address _spender) external view returns (uint256 remaining);
 
   // EVENTS
   // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-20.md#transfer-1

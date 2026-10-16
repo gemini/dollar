@@ -1,6 +1,8 @@
-pragma solidity ^0.4.21;
+// SPDX-License-Identifier: UNLICENSED
+// Copyright (c) 2020 Gemini Trust Company LLC. All Rights Reserved
+pragma solidity ^0.8.0;
 
-import "./CustodianUpgradeable.sol";
+import "./CustodianUpgradeableV1dot1.sol";
 import "./ERC20Proxy.sol";
 import "./ERC20Store.sol";
 
@@ -20,7 +22,7 @@ import "./ERC20Store.sol";
   *
   * @author  Gemini Trust Company, LLC
   */
-contract ERC20Impl is CustodianUpgradeable {
+contract ERC20Impl is CustodianUpgradeableV1dot1 {
 
     // TYPES
     /// @dev  The struct type for pending increases to the token supply (print).
@@ -31,60 +33,29 @@ contract ERC20Impl is CustodianUpgradeable {
 
     // MEMBERS
     /// @dev  The reference to the proxy.
-    ERC20Proxy public erc20Proxy;
+    ERC20Proxy immutable public erc20Proxy;
 
     /// @dev  The reference to the store.
-    ERC20Store public erc20Store;
-
-    /// @dev  The sole authorized caller of delegated transfer control ('sweeping').
-    address public sweeper;
-
-    /** @dev  The static message to be signed by an external account that
-      * signifies their permission to forward their balance to any arbitrary
-      * address. This is used to consolidate the control of all accounts
-      * backed by a shared keychain into the control of a single key.
-      * Initialized as the concatenation of the address of this contract
-      * and the word "sweep". This concatenation is done to prevent a replay
-      * attack in a subsequent contract, where the sweep message could
-      * potentially be replayed to re-enable sweeping ability.
-      */
-    bytes32 public sweepMsg;
-
-    /** @dev  The mapping that stores whether the address in question has
-      * enabled sweeping its contents to another account or not.
-      * If an address maps to "true", it has already enabled sweeping,
-      * and thus does not need to re-sign the `sweepMsg` to enact the sweep.
-      */
-    mapping (address => bool) public sweptSet;
+    ERC20Store immutable public erc20Store;
 
     /// @dev  The map of lock ids to pending token increases.
     mapping (bytes32 => PendingPrint) public pendingPrintMap;
 
     // CONSTRUCTOR
-    function ERC20Impl(
+    constructor(
           address _erc20Proxy,
           address _erc20Store,
-          address _custodian,
-          address _sweeper
+          address _custodian
     )
-        CustodianUpgradeable(_custodian)
-        public
+        CustodianUpgradeableV1dot1(_custodian)
     {
-        require(_sweeper != 0);
         erc20Proxy = ERC20Proxy(_erc20Proxy);
         erc20Store = ERC20Store(_erc20Store);
-
-        sweeper = _sweeper;
-        sweepMsg = keccak256(address(this), "sweep");
     }
 
     // MODIFIERS
     modifier onlyProxy {
-        require(msg.sender == address(erc20Proxy));
-        _;
-    }
-    modifier onlySweeper {
-        require(msg.sender == sweeper);
+        require(msg.sender == address(erc20Proxy), "unauthorized");
         _;
     }
 
@@ -104,11 +75,11 @@ contract ERC20Impl is CustodianUpgradeable {
         address _spender,
         uint256 _value
     )
-        public
+        external
         onlyProxy
         returns (bool success)
     {
-        require(_spender != address(0)); // disallow unspendable approvals
+        require(_spender != address(0), "zero address"); // disallow unspendable approvals
         erc20Store.setAllowance(_sender, _spender, _value);
         erc20Proxy.emitApproval(_sender, _spender, _value);
         return true;
@@ -129,19 +100,22 @@ contract ERC20Impl is CustodianUpgradeable {
         address _spender,
         uint256 _addedValue
     )
-        public
+        external
         onlyProxy
         returns (bool success)
     {
-        require(_spender != address(0)); // disallow unspendable approvals
+        require(_spender != address(0), "zero address"); // disallow unspendable approvals
         uint256 currentAllowance = erc20Store.allowed(_sender, _spender);
-        uint256 newAllowance = currentAllowance + _addedValue;
 
-        require(newAllowance >= currentAllowance);
+        unchecked {
+            // unchecked `+` is safe as overflow check follows
+            uint256 newAllowance = currentAllowance + _addedValue;
+            require(newAllowance >= currentAllowance, "overflow");
 
-        erc20Store.setAllowance(_sender, _spender, newAllowance);
-        erc20Proxy.emitApproval(_sender, _spender, newAllowance);
-        return true;
+            erc20Store.setAllowance(_sender, _spender, newAllowance);
+            erc20Proxy.emitApproval(_sender, _spender, newAllowance);
+            return true;
+        }
     }
 
     /** @notice  Core logic of the `decreaseApproval` function.
@@ -159,18 +133,22 @@ contract ERC20Impl is CustodianUpgradeable {
         address _spender,
         uint256 _subtractedValue
     )
-        public
+        external
         onlyProxy
         returns (bool success)
     {
-        require(_spender != address(0)); // disallow unspendable approvals
+        require(_spender != address(0), "zero address"); // disallow unspendable approvals
         uint256 currentAllowance = erc20Store.allowed(_sender, _spender);
-        uint256 newAllowance = currentAllowance - _subtractedValue;
 
-        require(newAllowance <= currentAllowance);
+        unchecked {
+            // unchecked `-` is safe as overflow check follows
+            uint256 newAllowance = currentAllowance - _subtractedValue;
+            require(newAllowance <= currentAllowance, "overflow");
 
-        erc20Store.setAllowance(_sender, _spender, newAllowance);
-        erc20Proxy.emitApproval(_sender, _spender, newAllowance);
+            erc20Store.setAllowance(_sender, _spender, newAllowance);
+            erc20Proxy.emitApproval(_sender, _spender, newAllowance);
+        }
+
         return true;
     }
 
@@ -188,17 +166,46 @@ contract ERC20Impl is CustodianUpgradeable {
       *
       * @return  lockId  A unique identifier for this request.
       */
-    function requestPrint(address _receiver, uint256 _value) public returns (bytes32 lockId) {
-        require(_receiver != address(0));
+    function requestPrint(address _receiver, uint256 _value) external returns (bytes32 lockId) {
+        require(_receiver != address(0), "zero address");
 
-        lockId = generateLockId();
+        (bytes32 preLockId, uint256 lockRequestIdx) = generatePreLockId();
+        lockId = keccak256(
+            abi.encodePacked(
+                preLockId,
+                this.requestPrint.selector,
+                _receiver,
+                _value
+            )
+        );
 
         pendingPrintMap[lockId] = PendingPrint({
             receiver: _receiver,
             value: _value
         });
 
-        emit PrintingLocked(lockId, _receiver, _value);
+        emit PrintingLocked(lockId, _receiver, _value, lockRequestIdx);
+    }
+
+    function _executePrint(address _receiver, uint256 _value) private returns (bool success) {
+        uint256 supply = erc20Store.totalSupply();
+
+        unchecked {
+            // unchecked `+` is safe as overflow check follows
+            uint256 newSupply = supply + _value;
+            if (newSupply >= supply) {
+                erc20Store.setTotalSupply(newSupply);
+                erc20Store.addBalance(_receiver, _value);
+
+                erc20Proxy.emitTransfer(address(0), _receiver, _value);
+                return true;
+            }
+        }
+    }
+
+    function executePrint(address _receiver, uint256 _value) external onlyCustodian {
+        require(_receiver != address(0), "zero address");
+        _executePrint(_receiver, _value);
     }
 
     /** @notice  Confirms a pending increase in the token supply.
@@ -211,26 +218,38 @@ contract ERC20Impl is CustodianUpgradeable {
       *
       * @param  _lockId  The identifier of a pending print request.
       */
-    function confirmPrint(bytes32 _lockId) public onlyCustodian {
+    function confirmPrint(bytes32 _lockId) external onlyCustodian {
         PendingPrint storage print = pendingPrintMap[_lockId];
 
         // reject ‘null’ results from the map lookup
         // this can only be the case if an unknown `_lockId` is received
         address receiver = print.receiver;
-        require (receiver != address(0));
+        require (receiver != address(0), "no such lockId");
         uint256 value = print.value;
 
         delete pendingPrintMap[_lockId];
 
-        uint256 supply = erc20Store.totalSupply();
-        uint256 newSupply = supply + value;
-        if (newSupply >= supply) {
-          erc20Store.setTotalSupply(newSupply);
-          erc20Store.addBalance(receiver, value);
-
-          emit PrintingConfirmed(_lockId, receiver, value);
-          erc20Proxy.emitTransfer(address(0), receiver, value);
+        if (_executePrint(receiver, value)) {
+            emit PrintingConfirmed(_lockId, receiver, value);
         }
+    }
+
+    function _executeBurn(address _owner, uint256 _value) private returns (bool success) {
+        uint256 balanceOfSender = erc20Store.balances(_owner);
+        require(_value <= balanceOfSender, "insufficient balance");
+
+        unchecked {
+            // unchecked `-` is safe as `_value <= balanceOfSender`
+            erc20Store.setBalance(_owner, balanceOfSender - _value);
+            // unchecked `-` is safe as the global invariants is that
+            // the sum of all balances equals the total supply, therefore
+            // as `_value <= balanceOfSender`, then `_value <= totalSupply`
+            erc20Store.setTotalSupply(erc20Store.totalSupply() - _value);
+        }
+
+        erc20Proxy.emitTransfer(_owner, address(0), _value);
+
+        return true;
     }
 
     /** @notice  Burns the specified value from the sender's balance.
@@ -241,16 +260,19 @@ contract ERC20Impl is CustodianUpgradeable {
       *
       * @return  success  true if the burn succeeded.
       */
-    function burn(uint256 _value) public returns (bool success) {
-        uint256 balanceOfSender = erc20Store.balances(msg.sender);
-        require(_value <= balanceOfSender);
+    function burn(uint256 _value) external returns (bool success) {
+        return _executeBurn(msg.sender, _value);
+    }
 
-        erc20Store.setBalance(msg.sender, balanceOfSender - _value);
-        erc20Store.setTotalSupply(erc20Store.totalSupply() - _value);
-
-        erc20Proxy.emitTransfer(msg.sender, address(0), _value);
-
-        return true;
+    /** @notice  Burns the specified value from the owner's balance.
+      *
+      * @dev  Owner's balance is subtracted by the amount the custodian wishes to burn.
+      *
+      * @param  _owner  The owner of the tokens.
+      * @param  _value  The amount to burn.
+      */
+    function burn(address _owner, uint256 _value) external onlyCustodian {
+        _executeBurn(_owner, _value);
     }
 
     /** @notice  A function for a sender to issue multiple transfers to multiple
@@ -271,17 +293,17 @@ contract ERC20Impl is CustodianUpgradeable {
       * @param  _values  The values for each destination address.
       * @return  success  If transfers succeeded.
       */
-    function batchTransfer(address[] _tos, uint256[] _values) public returns (bool success) {
-        require(_tos.length == _values.length);
+    function batchTransfer(address[] calldata _tos, uint256[] calldata _values) external returns (bool success) {
+        require(_tos.length == _values.length, "inconsistent length");
 
         uint256 numTransfers = _tos.length;
         uint256 senderBalance = erc20Store.balances(msg.sender);
 
         for (uint256 i = 0; i < numTransfers; i++) {
           address to = _tos[i];
-          require(to != address(0));
+          require(to != address(0), "zero address");
           uint256 v = _values[i];
-          require(senderBalance >= v);
+          require(senderBalance >= v, "insufficient balance");
 
           if (msg.sender != to) {
             senderBalance -= v;
@@ -293,95 +315,6 @@ contract ERC20Impl is CustodianUpgradeable {
         erc20Store.setBalance(msg.sender, senderBalance);
 
         return true;
-    }
-
-    /** @notice  Enables the delegation of transfer control for many
-      * accounts to the sweeper account, transferring any balances
-      * as well to the given destination.
-      *
-      * @dev  An account delegates transfer control by signing the
-      * value of `sweepMsg`. The sweeper account is the only authorized
-      * caller of this function, so it must relay signatures on behalf
-      * of accounts that delegate transfer control to it. Enabling
-      * delegation is idempotent and permanent. If the account has a
-      * balance at the time of enabling delegation, its balance is
-      * also transfered to the given destination account `_to`.
-      * NOTE: transfers to the zero address are disallowed.
-      *
-      * @param  _vs  The array of recovery byte components of the ECDSA signatures.
-      * @param  _rs  The array of 'R' components of the ECDSA signatures.
-      * @param  _ss  The array of 'S' components of the ECDSA signatures.
-      * @param  _to  The destination for swept balances.
-      */
-    function enableSweep(uint8[] _vs, bytes32[] _rs, bytes32[] _ss, address _to) public onlySweeper {
-        require(_to != address(0));
-        require((_vs.length == _rs.length) && (_vs.length == _ss.length));
-
-        uint256 numSignatures = _vs.length;
-        uint256 sweptBalance = 0;
-
-        for (uint256 i=0; i<numSignatures; ++i) {
-          address from = ecrecover(sweepMsg, _vs[i], _rs[i], _ss[i]);
-
-          // ecrecover returns 0 on malformed input
-          if (from != address(0)) {
-            sweptSet[from] = true;
-
-            uint256 fromBalance = erc20Store.balances(from);
-
-            if (fromBalance > 0) {
-              sweptBalance += fromBalance;
-
-              erc20Store.setBalance(from, 0);
-
-              erc20Proxy.emitTransfer(from, _to, fromBalance);
-            }
-          }
-        }
-
-        if (sweptBalance > 0) {
-          erc20Store.addBalance(_to, sweptBalance);
-        }
-    }
-
-    /** @notice  For accounts that have delegated, transfer control
-      * to the sweeper, this function transfers their balances to the given
-      * destination.
-      *
-      * @dev The sweeper account is the only authorized caller of
-      * this function. This function accepts an array of addresses to have their
-      * balances transferred for gas efficiency purposes.
-      * NOTE: any address for an account that has not been previously enabled
-      * will be ignored.
-      * NOTE: transfers to the zero address are disallowed.
-      *
-      * @param  _froms  The addresses to have their balances swept.
-      * @param  _to  The destination address of all these transfers.
-      */
-    function replaySweep(address[] _froms, address _to) public onlySweeper {
-        require(_to != address(0));
-        uint256 lenFroms = _froms.length;
-        uint256 sweptBalance = 0;
-
-        for (uint256 i=0; i<lenFroms; ++i) {
-            address from = _froms[i];
-
-            if (sweptSet[from]) {
-                uint256 fromBalance = erc20Store.balances(from);
-
-                if (fromBalance > 0) {
-                    sweptBalance += fromBalance;
-
-                    erc20Store.setBalance(from, 0);
-
-                    erc20Proxy.emitTransfer(from, _to, fromBalance);
-                }
-            }
-        }
-
-        if (sweptBalance > 0) {
-            erc20Store.addBalance(_to, sweptBalance);
-        }
     }
 
     /** @notice  Core logic of the ERC20 `transferFrom` function.
@@ -400,22 +333,28 @@ contract ERC20Impl is CustodianUpgradeable {
         address _to,
         uint256 _value
     )
-        public
+        external
         onlyProxy
         returns (bool success)
     {
-        require(_to != address(0)); // ensure burn is the cannonical transfer to 0x0
+        require(_to != address(0), "zero address"); // ensure burn is the cannonical transfer to 0x0
 
         uint256 balanceOfFrom = erc20Store.balances(_from);
-        require(_value <= balanceOfFrom);
+        require(_value <= balanceOfFrom, "insufficient balance");
 
         uint256 senderAllowance = erc20Store.allowed(_from, _sender);
-        require(_value <= senderAllowance);
+        require(_value <= senderAllowance, "insufficient allowance");
 
-        erc20Store.setBalance(_from, balanceOfFrom - _value);
+        unchecked {
+            // unchecked `-` is safe as `_value <= balanceOfFrom`
+            erc20Store.setBalance(_from, balanceOfFrom - _value);
+        }
         erc20Store.addBalance(_to, _value);
 
-        erc20Store.setAllowance(_from, _sender, senderAllowance - _value);
+        unchecked {
+            // unchecked `-` is safe as `_value <= senderAllowance`
+            erc20Store.setAllowance(_from, _sender, senderAllowance - _value);
+        }
 
         erc20Proxy.emitTransfer(_from, _to, _value);
 
@@ -437,16 +376,19 @@ contract ERC20Impl is CustodianUpgradeable {
         address _to,
         uint256 _value
     )
-        public
+        external
         onlyProxy
         returns (bool success)
     {
-        require(_to != address(0)); // ensure burn is the cannonical transfer to 0x0
+        require(_to != address(0), "zero address"); // ensure burn is the cannonical transfer to 0x0
 
         uint256 balanceOfSender = erc20Store.balances(_sender);
-        require(_value <= balanceOfSender);
+        require(_value <= balanceOfSender, "insufficient balance");
 
-        erc20Store.setBalance(_sender, balanceOfSender - _value);
+        unchecked {
+            // unchecked `-` is safe as `_value <= balanceOfSender`
+            erc20Store.setBalance(_sender, balanceOfSender - _value);
+        }
         erc20Store.addBalance(_to, _value);
 
         erc20Proxy.emitTransfer(_sender, _to, _value);
@@ -456,23 +398,23 @@ contract ERC20Impl is CustodianUpgradeable {
 
     // METHODS (ERC20 sub interface impl.)
     /// @notice  Core logic of the ERC20 `totalSupply` function.
-    function totalSupply() public view returns (uint256) {
+    function totalSupply() external view returns (uint256) {
         return erc20Store.totalSupply();
     }
 
     /// @notice  Core logic of the ERC20 `balanceOf` function.
-    function balanceOf(address _owner) public view returns (uint256 balance) {
+    function balanceOf(address _owner) external view returns (uint256 balance) {
         return erc20Store.balances(_owner);
     }
 
     /// @notice  Core logic of the ERC20 `allowance` function.
-    function allowance(address _owner, address _spender) public view returns (uint256 remaining) {
+    function allowance(address _owner, address _spender) external view returns (uint256 remaining) {
         return erc20Store.allowed(_owner, _spender);
     }
 
     // EVENTS
     /// @dev  Emitted by successful `requestPrint` calls.
-    event PrintingLocked(bytes32 _lockId, address _receiver, uint256 _value);
+    event PrintingLocked(bytes32 _lockId, address _receiver, uint256 _value, uint256 _lockRequestIdx);
     /// @dev Emitted by successful `confirmPrint` calls.
     event PrintingConfirmed(bytes32 _lockId, address _receiver, uint256 _value);
 }

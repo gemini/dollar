@@ -1,4 +1,6 @@
-pragma solidity ^0.4.21;
+// SPDX-License-Identifier: UNLICENSED
+// Copyright (c) 2020 Gemini Trust Company LLC. All Rights Reserved
+pragma solidity ^0.8.0;
 
 import "./CustodianUpgradeable.sol";
 import "./ERC20Impl.sol";
@@ -17,7 +19,7 @@ import "./ERC20Impl.sol";
   *
   * @author Gemini Trust Company, LLC
   */
-contract ERC20ImplUpgradeable is CustodianUpgradeable  {
+abstract contract ERC20ImplUpgradeable is CustodianUpgradeable {
 
     // TYPES
     /// @dev  The struct type for pending implementation changes.
@@ -33,8 +35,8 @@ contract ERC20ImplUpgradeable is CustodianUpgradeable  {
     mapping (bytes32 => ImplChangeRequest) public implChangeReqs;
 
     // CONSTRUCTOR
-    function ERC20ImplUpgradeable(address _custodian) CustodianUpgradeable(_custodian) public {
-        erc20Impl = ERC20Impl(0x0);
+    constructor(address _custodian) CustodianUpgradeable(_custodian) {
+        erc20Impl = ERC20Impl(address(0));
     }
 
     // MODIFIERS
