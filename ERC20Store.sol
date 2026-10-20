@@ -1,4 +1,6 @@
-pragma solidity ^0.4.21;
+// SPDX-License-Identifier: UNLICENSED
+// Copyright (c) 2020 Gemini Trust Company LLC. All Rights Reserved
+pragma solidity ^0.8.0;
 
 import "./ERC20ImplUpgradeable.sol";
 
@@ -28,7 +30,7 @@ contract ERC20Store is ERC20ImplUpgradeable {
     mapping (address => mapping (address => uint256)) public allowed;
 
     // CONSTRUCTOR
-    function ERC20Store(address _custodian) ERC20ImplUpgradeable(_custodian) public {
+    constructor(address _custodian) ERC20ImplUpgradeable(_custodian) {
         totalSupply = 0;
     }
 
@@ -111,6 +113,10 @@ contract ERC20Store is ERC20ImplUpgradeable {
         public
         onlyImpl
     {
-        balances[_owner] = balances[_owner] + _balanceIncrease;
+        unchecked {
+            // unchecked `+` as caller is responsible
+            // see occurrences of `.addBalance` in `ERC20Impl`
+            balances[_owner] = balances[_owner] + _balanceIncrease;
+        }
     }
 }

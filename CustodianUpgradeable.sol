@@ -1,4 +1,6 @@
-pragma solidity ^0.4.21;
+// SPDX-License-Identifier: UNLICENSED
+// Copyright (c) 2020 Gemini Trust Company LLC. All Rights Reserved
+pragma solidity ^0.8.0;
 
 import "./LockRequestable.sol";
 
@@ -14,7 +16,7 @@ import "./LockRequestable.sol";
   *
   * @author  Gemini Trust Company, LLC
   */
-contract CustodianUpgradeable is LockRequestable {
+abstract contract CustodianUpgradeable is LockRequestable {
 
     // TYPES
     /// @dev  The struct type for pending custodian changes.
@@ -30,11 +32,10 @@ contract CustodianUpgradeable is LockRequestable {
     mapping (bytes32 => CustodianChangeRequest) public custodianChangeReqs;
 
     // CONSTRUCTOR
-    function CustodianUpgradeable(
+    constructor(
         address _custodian
     )
       LockRequestable()
-      public
     {
         custodian = _custodian;
     }
@@ -91,7 +92,7 @@ contract CustodianUpgradeable is LockRequestable {
 
         // reject ‘null’ results from the map lookup
         // this can only be the case if an unknown `_lockId` is received
-        require(changeRequest.proposedNew != 0);
+        require(changeRequest.proposedNew != address(0));
 
         return changeRequest.proposedNew;
     }

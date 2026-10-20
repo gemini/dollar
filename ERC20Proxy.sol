@@ -1,4 +1,6 @@
-pragma solidity ^0.4.21;
+// SPDX-License-Identifier: UNLICENSED
+// Copyright (c) 2020 Gemini Trust Company LLC. All Rights Reserved
+pragma solidity ^0.8.0;
 
 import "./ERC20Interface.sol";
 import "./ERC20ImplUpgradeable.sol";
@@ -30,14 +32,13 @@ contract ERC20Proxy is ERC20Interface, ERC20ImplUpgradeable {
     uint8 public decimals;
 
     // CONSTRUCTOR
-    function ERC20Proxy(
-        string _name,
-        string _symbol,
+    constructor(
+        string memory _name,
+        string memory _symbol,
         uint8 _decimals,
         address _custodian
     )
         ERC20ImplUpgradeable(_custodian)
-        public
     {
         name = _name;
         symbol = _symbol;
@@ -50,7 +51,7 @@ contract ERC20Proxy is ERC20Interface, ERC20ImplUpgradeable {
       *
       * @return  the total token supply.
       */
-    function totalSupply() public view returns (uint256) {
+    function totalSupply() public override view returns (uint256) {
         return erc20Impl.totalSupply();
     }
 
@@ -59,7 +60,7 @@ contract ERC20Proxy is ERC20Interface, ERC20ImplUpgradeable {
       *
       * @return  balance  the balance of account with address `_owner`.
       */
-    function balanceOf(address _owner) public view returns (uint256 balance) {
+    function balanceOf(address _owner) public override view returns (uint256 balance) {
         return erc20Impl.balanceOf(_owner);
     }
 
@@ -76,7 +77,7 @@ contract ERC20Proxy is ERC20Interface, ERC20ImplUpgradeable {
       *
       * @return  success  true if transfer completes.
       */
-    function transfer(address _to, uint256 _value) public returns (bool success) {
+    function transfer(address _to, uint256 _value) public override returns (bool success) {
         return erc20Impl.transferWithSender(msg.sender, _to, _value);
     }
 
@@ -89,7 +90,7 @@ contract ERC20Proxy is ERC20Interface, ERC20ImplUpgradeable {
       *
       * @return  success  true if transfer completes.
       */
-    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+    function transferFrom(address _from, address _to, uint256 _value) public override returns (bool success) {
         return erc20Impl.transferFromWithSender(msg.sender, _from, _to, _value);
     }
 
@@ -107,7 +108,7 @@ contract ERC20Proxy is ERC20Interface, ERC20ImplUpgradeable {
       *
       * @return  success  true if approval completes.
       */
-    function approve(address _spender, uint256 _value) public returns (bool success) {
+    function approve(address _spender, uint256 _value) public override returns (bool success) {
         return erc20Impl.approveWithSender(msg.sender, _spender, _value);
     }
 
@@ -143,7 +144,7 @@ contract ERC20Proxy is ERC20Interface, ERC20ImplUpgradeable {
       *
       * @return  remaining  the remaining allowance.
       */
-    function allowance(address _owner, address _spender) public view returns (uint256 remaining) {
+    function allowance(address _owner, address _spender) public override view returns (uint256 remaining) {
         return erc20Impl.allowance(_owner, _spender);
     }
 }
